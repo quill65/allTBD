@@ -1,3 +1,29 @@
+"""mlabnetdb module.
+
+Installation: MaxMind GeoIP2-ISP-Blocks files need to be copied into this module's 
+directory.  Name the file something like 'GeoIP2-ISP-Blocks-IPv4.20180223.csv.gz' then
+edit this file and set the value for maxMindDbFile. (csv file doesn't have to be 
+compressed with .gz).
+
+Currently this works with python3.  There are only a couple of glitches with python 2,
+so if there's demand, I'll get it working for that.
+
+Usage:
+
+$ python3
+
+>>> from mlabnetdb import mlabnetdb
+>>> 
+>>> mlabnetdb.lookup('128.0.217.22')
+{'autonomous_system_number': 6866, 'autonomous_system_organization': 'Cyprus Telecommunications Authority', 'network': '128.0.208.0/20', 'isp': 'CYTA', 'organization': 'CYTA'}
+>>> 
+
+lookup function returns a map of the matching record (or None, or raises an exception).
+
+Run unit tests: $ python3 mlabnetdb/test_mlabnetdb.py
+
+"""
+
 
 # mlabnetdb module
 
@@ -22,7 +48,7 @@ def _init(): # init called once below, called again as needed by unit tests
     _bmapLoaded = False
 
 
-def mmDbFile(valid_from=None, valid_to=None):
+def _mmDbFile(valid_from=None, valid_to=None):
     # TODO scan directory for date of snapshot
     return maxMindDbFile
 
@@ -88,7 +114,7 @@ def _loadMaxMindCsvFile(valid_from=None, valid_to=None):
 
     colnames = None
 
-    dbfn = os.path.join(os.path.dirname(__file__), mmDbFile())
+    dbfn = os.path.join(os.path.dirname(__file__), _mmDbFile())
 
     if not os.path.isfile(dbfn):
         raise Exception("can't find database file "+dbfn+".  MaxMind isp blocks file (e.g. GeoIP2-ISP-Blocks-IPv4.20180223.csv.gz) should be placed in this module's directory")
