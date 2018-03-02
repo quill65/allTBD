@@ -33,7 +33,8 @@ import csv, datetime
 
 # put MM database files in module directory
 maxMindDbFiles = []
-maxMindDbFile = 'GeoIP2-ISP-Blocks-IPv4.20180223.csv.gz'  # %Y%m%d
+#maxMindDbFile = 'GeoIP2-ISP-Blocks-IPv4.20180223.csv.gz'  # %Y%m%d
+maxMindDbFile = 'GeoIP2-ISP-Blocks-IPv4.20180223.csv'  # %Y%m%d
 
 
 # tree structures for all data; will create multiple versions for date snapshots
@@ -125,7 +126,7 @@ def _loadMaxMindCsvFile(valid_from=None, valid_to=None):
         openFunc = gzip.open
 
     _records_loaded = 0
-    with openFunc(dbfn, 'rt', newline='') as f:
+    with openFunc(dbfn, 'rt', newline='', encoding='utf-8') as f:
         reader = csv.DictReader(f)
         for rec in reader:
             if 'network' in rec:
