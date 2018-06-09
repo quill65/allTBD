@@ -1,26 +1,27 @@
-# python3
+#!/usr/bin/python3
 
-import datetime
+import os.path, sys
+from datetime import datetime, timedelta
 import calendar
 
+import fastparquet
 import pandas as pd
 from pandas.io import gbq
 
 from mlabnetdb import mlabnetdb
 
-# This function takes as input the metric, mlab_location, AS number, 
-# start_time, end_time and the optional country (the default 
-# country is set to US)
-# Check out the MLabServers.csv file to look up possible values for the
-# mlab_location and AS variables.  The mlab_location should be entered using 
-# quotation marks, the AS should be entered as an integer.
-# The choices for the metric are: "dtp", "rtt", and "prt" for download 
-# throughput, round trip time and packet retransmission respectively
-# The start_time, end_time info should be entered in the 'mm/dd/yy' format
-# The output of the function, when successful, is a text file, called
-# query.txt
+# script to download view from measurement-lab.release.ndt_all table, month at a time
+#
+# usage: script.py YYYY MM
+# 
+# Will write output to file named mlab_v1_YYYY_MM.parquet.
+# Queries for US; change line in sql if you want something different.
 
-def query_writer(start_time, end_time, country = 'US', limit=-1): 
+project_id = 'mlab-185523'
+max_limit = 1e8
+ndt_table = 'measurement-lab.release.ndt_all'
+
+def query_writer(start_time, end_time): 
       
     #DEFINING THE BASIC QUERIES FOR EACH METRIC
 
@@ -39,105 +40,78 @@ def query_writer(start_time, end_time, country = 'US', limit=-1):
     #    "\nAND web100_log_entry.snap.DataSegsOut > 0 "
 
 
-    basic_query = ("SELECT "
-        "\nweb100_log_entry.log_time AS log_time, "
-        "\nconnection_spec.client_geolocation.city  AS client_city, "
-        "\nconnection_spec.client_geolocation.area_code As client_area_code, "
-        "\nweb100_log_entry.connection_spec.remote_ip AS client_ip, "
-        "\nweb100_log_entry.connection_spec.local_ip AS MLab_ip, "
-        "\n8 * (web100_log_entry.snap.HCThruOctetsAcked / "
-        "\n(web100_log_entry.snap.SndLimTimeRwin + "
-        "\nweb100_log_entry.snap.SndLimTimeCwnd + "
-        "\nweb100_log_entry.snap.SndLimTimeSnd)) AS download_Mbps "
-        "\nFROM "
-        "\n[plx.google:m_lab.ndt.all] "
-        "\nWHERE "
-        "\nIS_EXPLICITLY_DEFINED(web100_log_entry.connection_spec.remote_ip) "
-        "\nAND IS_EXPLICITLY_DEFINED(web100_log_entry.connection_spec.local_ip) "
-        "\nAND IS_EXPLICITLY_DEFINED(web100_log_entry.snap.HCThruOctetsAcked) "
-        "\nAND IS_EXPLICITLY_DEFINED(web100_log_entry.snap.SndLimTimeRwin) "
-        "\nAND IS_EXPLICITLY_DEFINED(web100_log_entry.snap.SndLimTimeCwnd) "
-        "\nAND IS_EXPLICITLY_DEFINED(web100_log_entry.snap.SndLimTimeSnd) "
-        "\nAND project = 0 "
-        "\nAND IS_EXPLICITLY_DEFINED(connection_spec.data_direction) "
-        "\nAND connection_spec.data_direction = 1 "
-        "\nAND IS_EXPLICITLY_DEFINED(web100_log_entry.is_last_entry) "
-        "\nAND web100_log_entry.is_last_entry = True "
-        "\nAND web100_log_entry.snap.HCThruOctetsAcked >= 8192 "
-        "\nAND (web100_log_entry.snap.SndLimTimeRwin + "
-        "\nweb100_log_entry.snap.SndLimTimeCwnd + "
-        "\nweb100_log_entry.snap.SndLimTimeSnd) >= 9000000 "
-        "\nAND (web100_log_entry.snap.SndLimTimeRwin + "
-        "\nweb100_log_entry.snap.SndLimTimeCwnd +   "
-        "\nweb100_log_entry.snap.SndLimTimeSnd) < 3600000000 "
-        "\nAND (web100_log_entry.snap.State == 1 "
-        "\nOR (web100_log_entry.snap.State >= 5 "
-        "\nAND web100_log_entry.snap.State <= 11))")
+    basic_query = """
+SELECT
+  web100_log_entry.log_time AS log_time,
+  FORMAT_DATETIME("%Y%m", PARSE_DATETIME("%s", CAST(web100_log_entry.log_time AS STRING))) AS yyyymm_partition,
+  connection_spec.client_geolocation.city AS client_city,
+  connection_spec.client_geolocation.area_code AS client_area_code,
+  web100_log_entry.connection_spec.remote_ip AS client_ip,
+  web100_log_entry.connection_spec.local_ip AS MLab_ip,
+  8 * (web100_log_entry.snap.HCThruOctetsAcked / (web100_log_entry.snap.SndLimTimeRwin + web100_log_entry.snap.SndLimTimeCwnd + web100_log_entry.snap.SndLimTimeSnd)) AS download_Mbps
+FROM
+  `{}`
+WHERE
+  web100_log_entry.connection_spec.remote_ip IS NOT NULL
+  AND web100_log_entry.connection_spec.local_ip IS NOT NULL
+  AND web100_log_entry.snap.HCThruOctetsAcked IS NOT NULL
+  AND web100_log_entry.snap.SndLimTimeRwin IS NOT NULL
+  AND web100_log_entry.snap.SndLimTimeCwnd IS NOT NULL
+  AND web100_log_entry.snap.SndLimTimeSnd IS NOT NULL
+  AND project = 0
+  AND connection_spec.data_direction IS NOT NULL
+  AND connection_spec.data_direction = 1
+  AND web100_log_entry.snap.HCThruOctetsAcked >= 8192
+  AND (web100_log_entry.snap.SndLimTimeRwin + web100_log_entry.snap.SndLimTimeCwnd + web100_log_entry.snap.SndLimTimeSnd) >= 9000000
+  AND (web100_log_entry.snap.SndLimTimeRwin + web100_log_entry.snap.SndLimTimeCwnd + web100_log_entry.snap.SndLimTimeSnd) < 3600000000
+  AND (web100_log_entry.snap.State = 1
+    OR (web100_log_entry.snap.State >= 5
+      AND web100_log_entry.snap.State <= 11))
+  AND connection_spec.client_geolocation.country_code='US'
+"""
 
-
-    
+    basic_query = basic_query.format(ndt_table)
 
     #CONVERTING DATE TO UNIX TIMESTAMP
-    try:
-        dt = datetime.datetime.strptime(start_time, "%m/%d/%y")
-        start_time_unix = calendar.timegm(dt.timetuple())
-    except:
-        print("The start_time entered is invalid!")
-        return
-
-    try:
-        dt = datetime.datetime.strptime(end_time, "%m/%d/%y")
-        end_time_unix = calendar.timegm(dt.timetuple())
-    except:
-        print("The end_time entered is invalid!")
-        return
+    start_time_unix = calendar.timegm(start_time.timetuple())
+    end_time_unix = calendar.timegm(end_time.timetuple())
 
     #WRITING THE TIME CONDITION
     tstamp_var = "web100_log_entry.log_time"
     tframe_cond = ("\nAND " + tstamp_var + "<=" + "%d"%(end_time_unix) +
         "\nAND " + tstamp_var + ">=" + "%d"%(start_time_unix))
-    #print(tframe_cond)
-
-    #WRITING THE COUNTRY CONDITION
-    country_cond = ''
-    if country:
-        country_string = "'" + country + "'" 
-        country_var = "connection_spec.client_geolocation.country_code"
-        country_cond = "\nAND " + country_var + "==" + country_string
-        #print(country_cond)
 
     #LIMIT
-    limit_cond = ''
-    if limit >= 0:
-        limit_cond = "\nLIMIT " + str(int(limit))
+    limit_cond = "\nLIMIT " + str(int(max_limit))
 
-
-    #WRITING THE QUERY
-    the_query = basic_query + country_cond + tframe_cond + limit_cond
-    #with open("querypy.txt", "w") as text_file:
-    #    text_file.write(the_query)
-
-    return the_query
+    return basic_query + tframe_cond + limit_cond
 
 
 
-def acquire_mlab_data(project_id, start_time, end_time, country = 'US'):
+def acquire_mlab_data(project_id, start_time, end_time):
 
     # generate the query
-    querystring = query_writer(start_time, end_time, country)
+    querystring = query_writer(start_time, end_time)
 
+    print("starting query.....")
     # read the query output into a pandas dataframe
     #   NOTE: the first time this runs, you will be prompted for an authorization key. 
     #    Click on the link provided, get the key string, paste it in, and go.
-    df = gbq.read_gbq(querystring, project_id=project_id)
+    df = gbq.read_gbq(querystring, project_id=project_id, verbose=True, dialect='standard')
+    print("read", df.shape[0], "records")
 
     # use mlabnetdb to get ISP names
-    print("\ngetting ISP names.....")
+    print("getting ISP names.....")
     owner = []
     ispname = []
     asn = []
     for ip in df.client_ip:
-        ipinfo = mlabnetdb.lookup(ip, date=None)
+        ipinfo = None
+        try:
+            ipinfo = mlabnetdb.lookup(ip, date=None)
+        except Exception as e:
+            print("error for ip {}: {}".format(ip, e))
+
         if ipinfo:
             owner.append(ipinfo['autonomous_system_organization'])
             asn.append(ipinfo['autonomous_system_number'])
@@ -147,7 +121,7 @@ def acquire_mlab_data(project_id, start_time, end_time, country = 'US'):
             owner.append('')
             asn.append(0)
             ispname.append('')
-    print("\n  DONE getting ISP names")
+
 
     # add IP_owner and IP_ASN columns to the dataframe
     df["IP_owner"] = owner
@@ -157,16 +131,49 @@ def acquire_mlab_data(project_id, start_time, end_time, country = 'US'):
     
     return df
 
+def query_and_append(t_from, t_to, filename):
+
+    print('starting query for ', t1x,'-',t2x)
+
+    df = acquire_mlab_data(project_id, t_from, t_to)
+
+    print("saving results to {}.....".format(output_filename))
+    append = os.path.isfile(filename)
+    fastparquet.write(output_filename, df, append=append)
+
 #############################################################################
 
+if len(sys.argv) < 3:
+    import os.path
+    script = os.path.basename(__file__)
+    print("usage:\n", script, "yyyy mm")
+    print("\nqueries month's worth of data from '"+ndt_table+"' starting\nfrom first day in yyyy/mm.  Saves to mlab_view_yyyy_mm.parquet")
+    sys.exit(0)
 
-the_query = query_writer("06/15/14", "05/13/15", limit=999)
-print(the_query)
+ts = datetime.now()
 
+year = int(sys.argv[1])
+month = int(sys.argv[2])
 
-project_id = 'mlab-185523'
-df = acquire_mlab_data(project_id, "01/01/13", "02/01/13")
+output_filename = 'mlab_v1_{}_{}.parquet'.format(year, month)
 
+t1 = datetime(year, month, 1)
+month += 1
+if month == 13:
+    year += 1
+    month = 1
+t2 = datetime(year, month, 1)
 
-from fastparquet import write
-write('mlab-test-data-0.parquet', df)
+# break up query into N parts, otherwise pandas dataframe is too much for memory
+N = 4
+days_per_query = int((t2 - t1).days / N) + 1
+t1x = t1
+for _ in range(N):
+    t2x = t1x + timedelta(days=days_per_query)
+    if t2x > t2:
+        t2x = t2
+    query_and_append(t1x, t2x, output_filename)
+    t1x = t2x
+
+te = datetime.now()
+print('completed queries in', (te - ts))
